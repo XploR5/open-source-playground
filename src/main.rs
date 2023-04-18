@@ -1,16 +1,14 @@
-//ALL THE REQUIRED IMPORTS
+// // ALL THE REQUIRED IMPORTS // //
 use actix_web::{
     web::{self},
     App, HttpResponse, HttpServer, Responder,
 };
-use chrono::{DateTime, TimeZone, Utc};
-use dotenvy::dotenv;
+use chrono::{TimeZone, Utc};
 use fake::faker::{
     address::en::{
         CountryCode, CountryName, Geohash, SecondaryAddress, SecondaryAddressType, StateAbbr,
         StateName, StreetName, StreetSuffix,
     },
-    automotive::en::LicencePlate,
     chrono::en::{DateTimeAfter, DateTimeBetween},
     color::en::{Color, HslColor, RgbColor, RgbaColor},
     company::en::{
@@ -20,7 +18,6 @@ use fake::faker::{
     filesystem::en::{DirPath, FileExtension, FileName, FilePath},
     finance::raw::Bic,
     http::en::ValidStatusCode,
-    lorem::raw::Words,
 };
 use fake::faker::{
     color::en::HexColor,
@@ -29,13 +26,11 @@ use fake::faker::{
     lorem::en::*,
 };
 use fake::locales::EN;
-use fake::locales::*;
-use fake::Dummy;
 use fake::{
     faker::{
         address::en::{BuildingNumber, Latitude, Longitude, PostCode, ZipCode},
         barcode::en::{Isbn, Isbn10, Isbn13},
-        chrono::en::{Date, DateTime, DateTimeBefore, Duration, Time},
+        chrono::en::{Date, DateTime, DateTimeBefore, Time},
         name::raw::*,
         number::en::Digit,
         phone_number::en::{CellNumber, PhoneNumber},
@@ -50,19 +45,12 @@ use fake::{
     },
     Fake, Faker,
 };
-use rand::rngs::StdRng;
 use rand::Rng;
-use rand::SeedableRng;
-use regex::Regex;
 use serde::{Deserialize, Serialize};
-use sqlx::{
-    pool,
-    postgres::{self, PgConnectOptions, PgPool},
-};
-use std::default;
+use sqlx::postgres::{PgConnectOptions, PgPool};
 use uuid::Uuid;
 
-//ALL THE REQUIRED STRUCT DEFINATIONS
+// // ALL THE REQUIRED STRUCT DEFINATIONS // //
 #[derive(Debug, Serialize)]
 struct CreateDataResponse {
     response: String,
@@ -71,11 +59,11 @@ struct CreateDataResponse {
 #[derive(Deserialize)]
 struct CreateDataRequest {
     database: String,
-    tables: Vec<tables>,
+    tables: Vec<Tables>,
 }
 
 #[derive(Deserialize)]
-struct tables {
+struct Tables {
     tablename: String,
     datasize: u128,
     fields: Vec<Field>,
@@ -105,13 +93,15 @@ struct CreateDataResponse1 {
 }
 
 #[derive(Deserialize)]
-struct TableDataRequest {
+struct CreateRelation {
+    database: String,
     primary_table: String,
     secondary_table: String,
 }
 
 #[derive(Deserialize)]
 struct DeleteDataRequest {
+    database: String,
     request_id: String,
 }
 
@@ -122,7 +112,7 @@ struct Relation {
     secondary_table: String,
 }
 
-//ALL THE NECESSORY HANDLERS AND FUNCTIONS
+// // ALL THE NECESSORY HANDLERS AND FUNCTIONS // //
 
 //Handleing the Post request on create tables and data
 async fn handle_create_tables_and_data_req(req: web::Json<CreateDataRequest>) -> impl Responder {
@@ -150,9 +140,10 @@ async fn handle_create_tables_and_data_req(req: web::Json<CreateDataRequest>) ->
 }
 
 //CREATES RELATIONS BETWEEN EXISTING TABLES
-async fn handle_add_relations_in_tables_req(req: web::Json<TableDataRequest>) -> impl Responder {
+async fn handle_add_relations_in_tables_req(req: web::Json<CreateRelation>) -> impl Responder {
     // Getting the request JSON
-    let TableDataRequest {
+    let CreateRelation {
+        database,
         primary_table,
         secondary_table,
     } = req.into_inner();
@@ -161,7 +152,7 @@ async fn handle_add_relations_in_tables_req(req: web::Json<TableDataRequest>) ->
         .username("postgres")
         .password("password")
         .host("localhost")
-        .database("relational_database");
+        .database(&database);
     let pool = PgPool::connect_with(connect_options)
         .await
         .expect("Failed to create database pool");
@@ -173,17 +164,20 @@ async fn handle_add_relations_in_tables_req(req: web::Json<TableDataRequest>) ->
         secondary_table,
         primary_table.to_lowercase()
     );
+
     sqlx::query(&add_column_query)
         .execute(&pool)
         .await
         .expect("Failed to create new column");
 
+    // -- TODO - HARDCODED VALUES -- TO BE CHANGED LATER ON 
     let products_query = format!("SELECT int FROM {}", primary_table);
     let mut products: Vec<i32> = sqlx::query_scalar(&products_query)
         .fetch_all(&pool)
         .await
         .expect("Failed to get products");
 
+     // -- TODO - HARDCODED VALUES -- TO BE CHANGED LATER ON
     let orders_query = format!("SELECT int FROM {}", secondary_table);
     let orders: Vec<i32> = sqlx::query_scalar(&orders_query)
         .fetch_all(&pool)
@@ -242,20 +236,24 @@ async fn handle_delete_relations_in_tables_req(
     req: web::Json<DeleteDataRequest>,
 ) -> impl Responder {
     // Getting the request JSON
-    let DeleteDataRequest { request_id } = req.into_inner();
+    let DeleteDataRequest {
+        database,
+        request_id,
+    } = req.into_inner();
 
     let connect_options = PgConnectOptions::new()
         .username("postgres")
         .password("password")
         .host("localhost")
-        .database("relational_database");
+        .database(&database);
 
     let pool = PgPool::connect_with(connect_options)
         .await
         .expect("Failed to create database pool");
 
+    // -- TODO - HARDCODED VALUES -- TO BE CHANGED LATER ON
     let get_relation_query =
-        "SELECT primary_table, secondary_table FROM relations WHERE relation_id = $1";
+        "SELECT primary_table, secondary_table FROM relations WHERE unique_id = $1";
     let relation = sqlx::query_as::<_, (String, String)>(get_relation_query)
         .bind(&request_id)
         .fetch_one(&pool)
@@ -273,8 +271,9 @@ async fn handle_delete_relations_in_tables_req(
                 .execute(&pool)
                 .await
                 .expect("Failed to delete relation");
-
-            let delete_uuid_query = "DELETE FROM relations WHERE relation_id = $1";
+    
+    // -- TODO - HARDCODED VALUES -- TO BE CHANGED LATER ON
+            let delete_uuid_query = "DELETE FROM relations WHERE unique_id = $1";
             sqlx::query(delete_uuid_query)
                 .bind(&request_id)
                 .execute(&pool)
@@ -429,7 +428,7 @@ async fn create_table(tablename: &String, fields: &Vec<Field>, database: &String
             "Int" | "Digit" | "ZipCode" => {
                 column_definition = format!("{} {}", field.fieldname, "INT");
             } //FLOAT
-            "Float" =>{
+            "Float" => {
                 column_definition = format!("{} {}", field.fieldname, "FLOAT");
             } //BIGINT
             "Bigint" => {
@@ -1007,7 +1006,7 @@ async fn create_and_insert_data(
                     let max_length = field.config.max_length.unwrap_or(255);
                     let fake_string: String = ZipCode().fake();
                     fake_string.chars().take(max_length as usize).collect()
-                } 
+                }
                 //FLOAT
                 "Float" => {
                     let max_length = field.config.max_length.unwrap_or(250);
@@ -1015,7 +1014,7 @@ async fn create_and_insert_data(
                     let mut rng = rand::thread_rng();
                     let num = rng.gen_range(min_length..=max_length);
                     num.to_string()
-                } 
+                }
                 //BIGINT
                 "Bigint" => {
                     let max_length = field.config.max_length.unwrap_or(250000);
