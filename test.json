@@ -1,0 +1,72 @@
+{
+    "database": "pizzashop",
+    "tables": [
+        {
+            "tablename": "customers",
+            "datasize": 10,
+            "fields": [
+                {
+                    "fieldname": "customer_id",
+                    "data_type": "SERIAL PRIMARY KEY",
+                    "config": {}
+                },
+                {
+                    "fieldname": "customer_name",
+                    "data_type": "Name",
+                    "config": {
+                        "not_null": true
+                    }
+                },
+                {
+                    "fieldname": "Age",
+                    "data_type": "Int",
+                    "config": {
+                        "min_length": 5,
+                        "max_length": 85
+                    }
+                }
+            ]
+        },
+        {
+            "tablename": "orders",
+            "datasize": 50,
+            "fields": [
+                {
+                    "fieldname": "order_id",
+                    "data_type": "SERIAL PRIMARY KEY",
+                    "config": {}
+                },
+                {
+                    "fieldname": "customer_id",
+                    "data_type": "REFERENCE",
+                    "config": {
+                        "foreign_key": {
+                            "reference_type": "Int",
+                            "table": "customers",
+                            "field": "customer_id"
+                        },
+                        "not_null": true,
+                        "min_length": 1,
+                        "max_length": 10
+                    }
+                },
+                {
+                    "fieldname": "order_date_time",
+                    "data_type": "DateTime",
+                    "config": {
+                        "not_null": true
+                    }
+                },
+                {
+                    "fieldname": "total_order_price",
+                    "data_type": "Int",
+                    "config": {
+                        "not_null": true,
+                        "min_length": 10,
+                        "max_length": 1000
+                    }
+                }
+            ]
+        }
+    ]
+}

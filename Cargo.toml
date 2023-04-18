@@ -1,0 +1,17 @@
+[package]
+name = "data_synth"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+actix-web = "4.3.1"
+dotenvy = "0.15"
+regex = "1.7.3"
+fake = { version = "2.5", features=['random_color', 'derive', 'chrono', 'http', 'uuid', 'rust_decimal', 'bigdecimal']}
+rand = "0.8.5"
+chrono = "0.4.23"
+serde = { version = "1.0.137", features = ["derive"] }
+diesel = { version = "2.0.0", features = ["postgres"] }
+sqlx = { version = "0.6.3", features = ["runtime-actix-native-tls", "postgres", "time"] }
