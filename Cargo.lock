@@ -655,6 +655,7 @@ dependencies = [
  "regex",
  "serde",
  "sqlx",
+ "uuid",
 ]
 
 [[package]]
