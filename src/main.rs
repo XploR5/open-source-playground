@@ -177,15 +177,38 @@ async fn handle_add_relations_in_tables_req(req: web::Json<CreateRelation>) -> i
         .await
         .expect("Failed to create new column");
 
-    // -- TODO - HARDCODED VALUES -- TO BE CHANGED LATER ON
-    let products_query = format!("SELECT int FROM {}", primary_table);
+
+    let primary_key_query = format!(
+        "SELECT column_name
+        FROM information_schema.key_column_usage
+        WHERE table_name = '{}'
+        AND constraint_name LIKE '%_pkey'",
+        primary_table
+    );
+
+    let primary_key_name: String = sqlx::query_scalar(&primary_key_query)
+    .fetch_one(&pool)
+    .await
+    .expect("Failed to get primary key name");
+
+    let products_query = format!("SELECT {} FROM {}", primary_key_name, primary_table);
+
     let mut products: Vec<i32> = sqlx::query_scalar(&products_query)
         .fetch_all(&pool)
         .await
         .expect("Failed to get products");
 
-    // -- TODO - HARDCODED VALUES -- TO BE CHANGED LATER ON
-    let orders_query = format!("SELECT int FROM {}", secondary_table);
+
+    let column_query = format!(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = '{}' ORDER BY ordinal_position LIMIT 1",
+        secondary_table
+    );
+    let column_name: String = sqlx::query_scalar(&column_query)
+        .fetch_one(&pool)
+        .await
+        .expect("Failed to get column name");
+
+    let orders_query = format!("SELECT {} FROM {}", column_name, secondary_table);
     let orders: Vec<i32> = sqlx::query_scalar(&orders_query)
         .fetch_all(&pool)
         .await
@@ -198,10 +221,12 @@ async fn handle_add_relations_in_tables_req(req: web::Json<CreateRelation>) -> i
         let product_id = products[product_index];
 
         let update_query = format!(
-            "UPDATE {} SET {}_id = $1 WHERE int = $2",
+            "UPDATE {} SET {}_id = $1 WHERE {} = $2",
             secondary_table,
-            primary_table.to_lowercase()
+            primary_table.to_lowercase(),
+            column_name
         );
+
         sqlx::query(&update_query)
             .bind(product_id)
             .bind(order_id)
@@ -363,6 +388,9 @@ async fn create_table(
         let mut create_query = format!("CREATE TABLE {} (", tablename);
         let mut column_definitions = vec![];
 
+        let add_sql_str = format!("{} ,", add_sql);
+        create_query.push_str(&add_sql_str); ///// MODI
+
         for field in fields {
             let mut column_definition = format!("");
             match field.data_type.as_ref() {
@@ -481,8 +509,8 @@ async fn create_table(
         }
         create_query.push_str(&column_definitions.join(", "));
 
-        let add_sql_str = format!(", {} ", add_sql);
-        create_query.push_str(&add_sql_str); ///// MODI
+        // let add_sql_str = format!(", {} ", add_sql);
+        // create_query.push_str(&add_sql_str); ///// MODI
 
         create_query.push_str(");");
 
