@@ -1,4 +1,4 @@
-// // ALL THE REQUIRED IMPORTS // //
+// // ----- IMPORTS START ----- // //
 use actix_web::{
     web::{self},
     App, HttpResponse, HttpServer, Responder,
@@ -50,7 +50,9 @@ use serde::{Deserialize, Serialize};
 use sqlx::postgres::{PgConnectOptions, PgPool};
 use uuid::Uuid;
 
-// // ALL THE REQUIRED STRUCT DEFINATIONS // //
+// // ----- IMPORTS END ----- // //
+
+// // ----- STRUCT DEFINATIONS START ----- // //
 #[derive(Debug, Serialize)]
 struct CreateDataResponse {
     response: String,
@@ -113,258 +115,9 @@ struct Relation {
     secondary_table: String,
 }
 
-// // ALL THE NECESSORY HANDLERS AND FUNCTIONS // //
+// // ----- STRUCT DEFINATIONS END ----- // //
 
-async fn create_relations_table(database: &String) {
-    // Connecting to the Database
-    let connect_options = PgConnectOptions::new()
-        .username("postgres")
-        .password("password")
-        .host("localhost")
-        .database(&database); // connect to the default postgres database
-
-    let pool = PgPool::connect_with(connect_options)
-        .await
-        .expect("Failed to create database pool hi");
-
-    let create_relations_table_query = "CREATE TABLE relations (unique_id varchar, primary_table varchar, secondary_table varchar);".to_string();
-    sqlx::query(&create_relations_table_query)
-        .execute(&pool)
-        .await
-        .expect("Failed to create relations table hi");
-}
-
-//Handleing the Post request on create tables and data
-async fn handle_create_tables_and_data_req(req: web::Json<CreateDataRequest>) -> impl Responder {
-    // Getting the request JSON
-    let CreateDataRequest { database, tables } = req.into_inner();
-
-
-    // Creating tables in database
-    for i in 0..tables.len() {
-        create_table(
-            &tables[i].tablename,
-            &tables[i].add_sql,
-            &tables[i].fields,
-            &database,
-        )
-        .await;
-    }
-
-    // Create relations table
-    create_relations_table(&database).await;
-    
-    // creating fake data and inserting into the tables
-    for i in 0..tables.len() {
-        create_and_insert_data(
-            &tables[i].tablename,
-            &tables[i].datasize,
-            &tables[i].fields,
-            &database,
-        )
-        .await;
-    }
-
-
-    let response: String = format!("Data created and added successfully");
-    HttpResponse::Created().json(CreateDataResponse { response: response })
-}
-
-//CREATES RELATIONS TABLE
-async fn create_relations_table(database: &String) {
-    // Connecting to the Database
-    let connect_options = PgConnectOptions::new()
-        .username("postgres")
-        .password("password")
-        .host("localhost")
-        .database(&database); // connect to the default postgres database
-
-    let pool = PgPool::connect_with(connect_options)
-        .await
-        .expect("Failed to create database pool");
-
-    let create_relations_table_query = "CREATE TABLE relations (unique_id varchar, primary_table varchar, secondary_table varchar);".to_string();
-    sqlx::query(&create_relations_table_query)
-        .execute(&pool)
-        .await
-        .expect("Failed to create relations table");
-}
-
-//CREATES RELATIONS BETWEEN EXISTING TABLES
-async fn handle_add_relations_in_tables_req(req: web::Json<CreateRelation>) -> impl Responder {
-    // Getting the request JSON
-    let CreateRelation {
-        database,
-        primary_table,
-        secondary_table,
-    } = req.into_inner();
-
-    let connect_options = PgConnectOptions::new()
-        .username("postgres")
-        .password("password")
-        .host("localhost")
-        .database(&database);
-    let pool = PgPool::connect_with(connect_options)
-        .await
-        .expect("Failed to create database pool");
-
-    let request_id = Uuid::new_v4();
-    let requestid = request_id.to_string();
-    let add_column_query = format!(
-        "ALTER TABLE {} ADD {} INTEGER",
-        secondary_table,
-        primary_table.to_lowercase()
-    );
-
-    sqlx::query(&add_column_query)
-        .execute(&pool)
-        .await
-        .expect("Failed to create new column");
-
-    let primary_key_query = format!(
-        "SELECT column_name
-        FROM information_schema.key_column_usage
-        WHERE table_name = '{}'
-        AND constraint_name LIKE '%_pkey'",
-        primary_table
-    );
-
-    let primary_key_name: String = sqlx::query_scalar(&primary_key_query)
-        .fetch_one(&pool)
-        .await
-        .expect("Failed to get primary key name");
-
-    let products_query = format!("SELECT {} FROM {}", primary_key_name, primary_table);
-
-    let mut products: Vec<i32> = sqlx::query_scalar(&products_query)
-        .fetch_all(&pool)
-        .await
-        .expect("Failed to get products");
-
-    let column_query = format!(
-        "SELECT column_name FROM information_schema.columns WHERE table_name = '{}' ORDER BY ordinal_position LIMIT 1",
-        secondary_table
-    );
-    let column_name: String = sqlx::query_scalar(&column_query)
-        .fetch_one(&pool)
-        .await
-        .expect("Failed to get column name");
-
-    let orders_query = format!("SELECT {} FROM {}", column_name, secondary_table);
-    let orders: Vec<i32> = sqlx::query_scalar(&orders_query)
-        .fetch_all(&pool)
-        .await
-        .expect("Failed to get orders");
-
-    let mut rng = rand::thread_rng();
-    let temp_vec = products.clone();
-    for order_id in orders {
-        let product_index = rng.gen_range(0..products.len());
-        let product_id = products[product_index];
-
-        let update_query = format!(
-            "UPDATE {} SET {}_id = $1 WHERE {} = $2",
-            secondary_table,
-            primary_table.to_lowercase(),
-            column_name
-        );
-
-        sqlx::query(&update_query)
-            .bind(product_id)
-            .bind(order_id)
-            .execute(&pool)
-            .await
-            .expect("Failed to update order with foreign key");
-
-        products.remove(product_index);
-        if products.is_empty() {
-            products = temp_vec.clone();
-        }
-    }
-
-    let relation = Relation {
-        id: requestid,
-        primary_table,
-        secondary_table,
-    };
-
-    //insert both table names and unique id in database
-    let insert_query =
-        "INSERT INTO relations (unique_id, primary_table, secondary_table) VALUES ($1, $2, $3)";
-    sqlx::query(insert_query)
-        .bind(relation.id)
-        .bind(relation.primary_table)
-        .bind(relation.secondary_table)
-        .execute(&pool)
-        .await
-        .expect("Failed to insert relation into database");
-
-    HttpResponse::Created().json(CreateDataResponse1 {
-        request_id: request_id.to_string(),
-        res: "Relational data added successfully".to_string(),
-    })
-}
-
-//DELETES RELATIONS BETWEEN TABLES
-async fn handle_delete_relations_in_tables_req(
-    req: web::Json<DeleteDataRequest>,
-) -> impl Responder {
-    // Getting the request JSON
-    let DeleteDataRequest {
-        database,
-        request_id,
-    } = req.into_inner();
-
-    let connect_options = PgConnectOptions::new()
-        .username("postgres")
-        .password("password")
-        .host("localhost")
-        .database(&database);
-
-    let pool = PgPool::connect_with(connect_options)
-        .await
-        .expect("Failed to create database pool");
-
-    // -- TODO - HARDCODED VALUES -- TO BE CHANGED LATER ON
-    let get_relation_query =
-        "SELECT primary_table, secondary_table FROM relations WHERE unique_id = $1";
-    let relation = sqlx::query_as::<_, (String, String)>(get_relation_query)
-        .bind(&request_id)
-        .fetch_one(&pool)
-        .await;
-
-    match relation {
-        Ok(relation) => {
-            let delete_query = format!(
-                "ALTER TABLE {} DROP COLUMN {}_id",
-                relation.1,
-                relation.0.to_lowercase()
-            );
-
-            sqlx::query(&delete_query)
-                .execute(&pool)
-                .await
-                .expect("Failed to delete relation");
-
-            // -- TODO - HARDCODED VALUES -- TO BE CHANGED LATER ON
-            let delete_uuid_query = "DELETE FROM relations WHERE unique_id = $1";
-            sqlx::query(delete_uuid_query)
-                .bind(&request_id)
-                .execute(&pool)
-                .await
-                .expect("Failed to delete UUID from relations table");
-
-            HttpResponse::Ok().json(CreateDataResponse1 {
-                request_id: request_id,
-                res: "Relation deleted successfully".to_string(),
-            })
-        }
-        Err(_) => HttpResponse::NotFound().json(CreateDataResponse1 {
-            request_id: request_id,
-            res: "Relation not found".to_string(),
-        }),
-    }
-}
+// // ----- HELPER FUNCTIONS START ----- // //
 
 //Creating Table
 async fn create_table(
@@ -429,8 +182,8 @@ async fn create_table(
         let mut create_query = format!("CREATE TABLE {} (", tablename);
         let mut column_definitions = vec![];
 
-        let add_sql_str = format!(" {} ,", add_sql);
-        create_query.push_str(&add_sql_str); ///// MODIFY
+        let add_sql_str = format!("{} ,", add_sql);
+        create_query.push_str(&add_sql_str); ///// MODI
 
         for field in fields {
             let mut column_definition = format!("");
@@ -560,6 +313,44 @@ async fn create_table(
             .expect("Failed to create table");
     } else {
         print!("table -> {} already exists", tablename);
+    }
+}
+
+//Creates realtaions between tables
+async fn create_relations_table(database: &String) {
+    // Connecting to the Database
+    let connect_options = PgConnectOptions::new()
+        .username("postgres")
+        .password("password")
+        .host("localhost")
+        .database(&database); // connect to the default postgres database
+
+    let pool = PgPool::connect_with(connect_options)
+        .await
+        .expect("Failed to create database pool hi");
+
+    let table_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+                    SELECT *
+                    FROM information_schema.tables 
+                    WHERE table_schema = 'public' 
+                    AND table_name = $1
+                )",
+    )
+    .bind("relations")
+    .fetch_one(&pool)
+    .await
+    .expect("Failed to check if table exists");
+
+    if !table_exists {
+        let create_relations_table_query = "CREATE TABLE relations (unique_id varchar, primary_table varchar, secondary_table varchar);".to_string();
+        sqlx::query(&create_relations_table_query)
+            .execute(&pool)
+            .await
+            .expect("Failed to create relations table");
+    }
+    else{
+        print!("relations table exists already \n");
     }
 }
 
@@ -1217,7 +1008,222 @@ async fn create_and_insert_data(
     })
 }
 
-//ACTIX WEB HANDLE THE REST FEATURES
+// // ----- HELPER FUNCTIONS END ----- // //
+
+// // ----- HANDLER FUNCTIONS START ----- // //
+
+//HANDLE CREATE TABLE AND DATA
+async fn handle_create_tables_and_data_req(req: web::Json<CreateDataRequest>) -> impl Responder {
+    // Getting the request JSON
+    let CreateDataRequest { database, tables } = req.into_inner();
+
+    // Creating tables in database
+    for i in 0..tables.len() {
+        create_table(
+            &tables[i].tablename,
+            &tables[i].add_sql,
+            &tables[i].fields,
+            &database,
+        )
+        .await;
+    }
+
+    create_relations_table(&database).await;
+
+    // creating fake data and inserting into the tables
+    for i in 0..tables.len() {
+        create_and_insert_data(
+            &tables[i].tablename,
+            &tables[i].datasize,
+            &tables[i].fields,
+            &database,
+        )
+        .await;
+    }
+
+    let response: String = format!("Data created and added successfully");
+    HttpResponse::Created().json(CreateDataResponse { response: response })
+}
+
+//HANDLE CREATE RELATIONS BETWEEN EXISTING TABLES
+async fn handle_add_relations_in_tables_req(req: web::Json<CreateRelation>) -> impl Responder {
+    // Getting the request JSON
+    let CreateRelation {
+        database,
+        primary_table,
+        secondary_table,
+    } = req.into_inner();
+
+    let connect_options = PgConnectOptions::new()
+        .username("postgres")
+        .password("password")
+        .host("localhost")
+        .database(&database);
+    let pool = PgPool::connect_with(connect_options)
+        .await
+        .expect("Failed to create database pool");
+
+    let request_id = Uuid::new_v4();
+    let requestid = request_id.to_string();
+    let add_column_query = format!(
+        "ALTER TABLE {} ADD {}_id INTEGER",
+        secondary_table,
+        primary_table.to_lowercase()
+    );
+
+    sqlx::query(&add_column_query)
+        .execute(&pool)
+        .await
+        .expect("Failed to create new column");
+
+    let primary_key_query = format!(
+        "SELECT column_name
+        FROM information_schema.key_column_usage
+        WHERE table_name = '{}'
+        AND constraint_name LIKE '%_pkey'",
+        primary_table
+    );
+
+    let primary_key_name: String = sqlx::query_scalar(&primary_key_query)
+        .fetch_one(&pool)
+        .await
+        .expect("Failed to get primary key name");
+
+    let products_query = format!("SELECT {} FROM {}", primary_key_name, primary_table);
+
+    let mut products: Vec<i32> = sqlx::query_scalar(&products_query)
+        .fetch_all(&pool)
+        .await
+        .expect("Failed to get products");
+
+    let column_query = format!(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = '{}' ORDER BY ordinal_position LIMIT 1",
+        secondary_table
+    );
+    let column_name: String = sqlx::query_scalar(&column_query)
+        .fetch_one(&pool)
+        .await
+        .expect("Failed to get column name");
+
+    let orders_query = format!("SELECT {} FROM {}", column_name, secondary_table);
+    let orders: Vec<i32> = sqlx::query_scalar(&orders_query)
+        .fetch_all(&pool)
+        .await
+        .expect("Failed to get orders");
+
+    let mut rng = rand::thread_rng();
+    let temp_vec = products.clone();
+    for order_id in orders {
+        let product_index = rng.gen_range(0..products.len());
+        let product_id = products[product_index];
+
+        let update_query = format!(
+            "UPDATE {} SET {}_id = $1 WHERE {} = $2",
+            secondary_table,
+            primary_table.to_lowercase(),
+            column_name
+        );
+
+        sqlx::query(&update_query)
+            .bind(product_id)
+            .bind(order_id)
+            .execute(&pool)
+            .await
+            .expect("Failed to update order with foreign key");
+
+        products.remove(product_index);
+        if products.is_empty() {
+            products = temp_vec.clone();
+        }
+    }
+
+    let relation = Relation {
+        id: requestid,
+        primary_table,
+        secondary_table,
+    };
+
+    //insert both table names and unique id in database
+    let insert_query =
+        "INSERT INTO relations (unique_id, primary_table, secondary_table) VALUES ($1, $2, $3)";
+    sqlx::query(insert_query)
+        .bind(relation.id)
+        .bind(relation.primary_table)
+        .bind(relation.secondary_table)
+        .execute(&pool)
+        .await
+        .expect("Failed to insert relation into database");
+
+    HttpResponse::Created().json(CreateDataResponse1 {
+        request_id: request_id.to_string(),
+        res: "Relational data added successfully".to_string(),
+    })
+}
+
+//HANDLE DELETE RELATIONS BETWEEN TABLES
+async fn handle_delete_relations_in_tables_req(
+    req: web::Json<DeleteDataRequest>,
+) -> impl Responder {
+    // Getting the request JSON
+    let DeleteDataRequest {
+        database,
+        request_id,
+    } = req.into_inner();
+
+    let connect_options = PgConnectOptions::new()
+        .username("postgres")
+        .password("password")
+        .host("localhost")
+        .database(&database);
+
+    let pool = PgPool::connect_with(connect_options)
+        .await
+        .expect("Failed to create database pool");
+
+    // -- TODO - HARDCODED VALUES -- TO BE CHANGED LATER ON
+    let get_relation_query =
+        "SELECT primary_table, secondary_table FROM relations WHERE unique_id = $1";
+    let relation = sqlx::query_as::<_, (String, String)>(get_relation_query)
+        .bind(&request_id)
+        .fetch_one(&pool)
+        .await;
+
+    match relation {
+        Ok(relation) => {
+            let delete_query = format!(
+                "ALTER TABLE {} DROP COLUMN {}_id",
+                relation.1,
+                relation.0.to_lowercase()
+            );
+
+            sqlx::query(&delete_query)
+                .execute(&pool)
+                .await
+                .expect("Failed to delete relation");
+
+            // -- TODO - HARDCODED VALUES -- TO BE CHANGED LATER ON
+            let delete_uuid_query = "DELETE FROM relations WHERE unique_id = $1";
+            sqlx::query(delete_uuid_query)
+                .bind(&request_id)
+                .execute(&pool)
+                .await
+                .expect("Failed to delete UUID from relations table");
+
+            HttpResponse::Ok().json(CreateDataResponse1 {
+                request_id: request_id,
+                res: "Relation deleted successfully".to_string(),
+            })
+        }
+        Err(_) => HttpResponse::NotFound().json(CreateDataResponse1 {
+            request_id: request_id,
+            res: "Relation not found".to_string(),
+        }),
+    }
+}
+
+// // ----- HANDLER FUNCTIONS END ----- // //
+
+// // ----- ACTIX WEB HANDLES THE REST FEATURES ----- // //
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
