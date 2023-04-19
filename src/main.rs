@@ -59,13 +59,14 @@ struct CreateDataResponse {
 #[derive(Deserialize)]
 struct CreateDataRequest {
     database: String,
-    tables: Vec<Tables>,
+    tables: Vec<Table>,
 }
 
 #[derive(Deserialize)]
-struct Tables {
+struct Table {
     tablename: String,
     datasize: u128,
+    add_sql: String,
     fields: Vec<Field>,
 }
 
@@ -121,7 +122,7 @@ async fn handle_create_tables_and_data_req(req: web::Json<CreateDataRequest>) ->
 
     // Creating tables in database
     for i in 0..tables.len() {
-        create_table(&tables[i].tablename, &tables[i].fields, &database).await;
+        create_table(&tables[i].tablename, &tables[i].add_sql, &tables[i].fields, &database).await;
     }
 
     // creating fake data and inserting into the tables
@@ -293,7 +294,7 @@ async fn handle_delete_relations_in_tables_req(
 }
 
 //Creating Table
-async fn create_table(tablename: &String, fields: &Vec<Field>, database: &String) {
+async fn create_table(tablename: &String, add_sql: &String, fields: &Vec<Field>, database: &String) {
     // Connecting to the Database
     let connect_options = PgConnectOptions::new()
         .username("postgres")
@@ -452,7 +453,13 @@ async fn create_table(tablename: &String, fields: &Vec<Field>, database: &String
         column_definitions.push(column_definition);
     }
     create_query.push_str(&column_definitions.join(", "));
+    
+    let add_sql_str = format!(", {} ", add_sql);
+    create_query.push_str(&add_sql_str);///// MODI
+    
     create_query.push_str(");");
+
+    print!("create_query -> {}", create_query);
 
     sqlx::query(&create_query)
         .execute(&pool)
