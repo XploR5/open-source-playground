@@ -115,10 +115,30 @@ struct Relation {
 
 // // ALL THE NECESSORY HANDLERS AND FUNCTIONS // //
 
+async fn create_relations_table(database: &String) {
+    // Connecting to the Database
+    let connect_options = PgConnectOptions::new()
+        .username("postgres")
+        .password("password")
+        .host("localhost")
+        .database(&database); // connect to the default postgres database
+
+    let pool = PgPool::connect_with(connect_options)
+        .await
+        .expect("Failed to create database pool hi");
+
+    let create_relations_table_query = "CREATE TABLE relations (unique_id varchar, primary_table varchar, secondary_table varchar);".to_string();
+    sqlx::query(&create_relations_table_query)
+        .execute(&pool)
+        .await
+        .expect("Failed to create relations table hi");
+}
+
 //Handleing the Post request on create tables and data
 async fn handle_create_tables_and_data_req(req: web::Json<CreateDataRequest>) -> impl Responder {
     // Getting the request JSON
     let CreateDataRequest { database, tables } = req.into_inner();
+
 
     // Creating tables in database
     for i in 0..tables.len() {
@@ -144,6 +164,7 @@ async fn handle_create_tables_and_data_req(req: web::Json<CreateDataRequest>) ->
         )
         .await;
     }
+
 
     let response: String = format!("Data created and added successfully");
     HttpResponse::Created().json(CreateDataResponse { response: response })
