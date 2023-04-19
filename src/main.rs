@@ -122,7 +122,13 @@ async fn handle_create_tables_and_data_req(req: web::Json<CreateDataRequest>) ->
 
     // Creating tables in database
     for i in 0..tables.len() {
-        create_table(&tables[i].tablename, &tables[i].add_sql, &tables[i].fields, &database).await;
+        create_table(
+            &tables[i].tablename,
+            &tables[i].add_sql,
+            &tables[i].fields,
+            &database,
+        )
+        .await;
     }
 
     // creating fake data and inserting into the tables
@@ -171,14 +177,14 @@ async fn handle_add_relations_in_tables_req(req: web::Json<CreateRelation>) -> i
         .await
         .expect("Failed to create new column");
 
-    // -- TODO - HARDCODED VALUES -- TO BE CHANGED LATER ON 
+    // -- TODO - HARDCODED VALUES -- TO BE CHANGED LATER ON
     let products_query = format!("SELECT int FROM {}", primary_table);
     let mut products: Vec<i32> = sqlx::query_scalar(&products_query)
         .fetch_all(&pool)
         .await
         .expect("Failed to get products");
 
-     // -- TODO - HARDCODED VALUES -- TO BE CHANGED LATER ON
+    // -- TODO - HARDCODED VALUES -- TO BE CHANGED LATER ON
     let orders_query = format!("SELECT int FROM {}", secondary_table);
     let orders: Vec<i32> = sqlx::query_scalar(&orders_query)
         .fetch_all(&pool)
@@ -272,8 +278,8 @@ async fn handle_delete_relations_in_tables_req(
                 .execute(&pool)
                 .await
                 .expect("Failed to delete relation");
-    
-    // -- TODO - HARDCODED VALUES -- TO BE CHANGED LATER ON
+
+            // -- TODO - HARDCODED VALUES -- TO BE CHANGED LATER ON
             let delete_uuid_query = "DELETE FROM relations WHERE unique_id = $1";
             sqlx::query(delete_uuid_query)
                 .bind(&request_id)
@@ -294,7 +300,12 @@ async fn handle_delete_relations_in_tables_req(
 }
 
 //Creating Table
-async fn create_table(tablename: &String, add_sql: &String, fields: &Vec<Field>, database: &String) {
+async fn create_table(
+    tablename: &String,
+    add_sql: &String,
+    fields: &Vec<Field>,
+    database: &String,
+) {
     // Connecting to the Database
     let connect_options = PgConnectOptions::new()
         .username("postgres")
@@ -334,137 +345,156 @@ async fn create_table(tablename: &String, add_sql: &String, fields: &Vec<Field>,
         .await
         .expect("Failed to create database pool");
 
-    let mut create_query = format!("CREATE TABLE {} (", tablename);
-    let mut column_definitions = vec![];
-
-    for field in fields {
-        let mut column_definition = format!("");
-        match field.data_type.as_ref() {
-            "String"
-            | "StringInt"
-            | "Name"
-            | "City"
-            | "Email"
-            | "Password"
-            | "Word"
-            | "FirstName"
-            | "LastName"
-            | "Title"
-            | "Suffix"
-            | "NameWithTitle"
-            | "FreeEmailProvider"
-            | "DomainSuffix"
-            | "FreeEmail"
-            | "SafeEmail"
-            | "Username"
-            | "IPv4"
-            | "IPv6"
-            | "IP"
-            | "MACAddress"
-            | "UserAgent"
-            | "RfcStatusCode"
-            | "ValidStatusCode"
-            | "HexColor"
-            | "RgbColor"
-            | "RgbaColor"
-            | "HslColor"
-            | "Color"
-            | "CompanySuffix"
-            | "CompanyName"
-            | "Buzzword"
-            | "BuzzwordMiddle"
-            | "BuzzwordTail"
-            | "CatchPhase"
-            | "Verb"
-            | "Adj"
-            | "Noun"
-            | "Bs"
-            | "Profession"
-            | "Industry"
-            | "Geohash"
-            | "CityPrefix"
-            | "CitySuffix"
-            | "CityName"
-            | "CountryName"
-            | "CountryCode"
-            | "StreetSuffix"
-            | "StreetName"
-            | "FilePath"
-            | "FileName"
-            | "FileExtension"
-            | "DirPath"
-            | "StateName"
-            | "StateAbbr"
-            | "SecondaryAddressType"
-            | "SecondaryAddress"
-            | "PostCode"
-            | "BuildingNumber"
-            | "LicencePlate"
-            | "Isbn"
-            | "Isbn13"
-            | "Isbn10"
-            | "PhoneNumber"
-            | "CellNumber"
-            | "Bic"
-            | "UUIDv1"
-            | "UUIDv3"
-            | "UUIDv4"
-            | "UUIDv5"
-            | "Product" => {
-                let max_length = field.config.max_length.unwrap_or(255);
-                column_definition = format!("{} {}({})", field.fieldname, "VARCHAR", max_length);
-            } //DECIMAL(#, #)
-            "Latitude" => {
-                column_definition = format!("{} {}", field.fieldname, "DECIMAL(8,6)");
-            }
-            "Longitude" => {
-                column_definition = format!("{} {}", field.fieldname, "DECIMAL(9,6)");
-            } //BOOLEAN
-            "Bool" => {
-                column_definition = format!("{} {}", field.fieldname, "BOOLEAN");
-            } //TEXT
-            "Sentence" | "Sentences" | "Words" | "Paragraph" | "Paragraphs" => {
-                column_definition = format!("{} {}", field.fieldname, "TEXT");
-            } //INT
-            "Int" | "Digit" | "ZipCode" => {
-                column_definition = format!("{} {}", field.fieldname, "INT");
-            } //FLOAT
-            "Float" => {
-                column_definition = format!("{} {}", field.fieldname, "FLOAT");
-            } //BIGINT
-            "Bigint" => {
-                column_definition = format!("{} {}", field.fieldname, "BIGINT");
-            }
-            //TIME
-            "Time" => {
-                column_definition = format!("{} {}", field.fieldname, "Time");
-            } //DATE
-            "Date" => {
-                column_definition = format!("{} {}", field.fieldname, "DATE");
-            } //DATETIME //TIMESTAMP
-            "DateTime" | "DateTimeBefore" | "DateTimeAfter" | "DateTimeBetween" => {
-                column_definition = format!("{} {}", field.fieldname, "TIMESTAMP");
-            }
-            _ => println!(
-                "Didn't find -> {} <- in any of the expected values.",
-                field.data_type
-            ),
-        }
-        column_definitions.push(column_definition);
-    }
-    create_query.push_str(&column_definitions.join(", "));
-    
-    let add_sql_str = format!(", {} ", add_sql);
-    create_query.push_str(&add_sql_str);///// MODI
-    
-    create_query.push_str(");");
-
-    print!("create_query -> {}", create_query);
-
-    sqlx::query(&create_query)
-        .execute(&pool)
+        let table_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                SELECT *
+                FROM information_schema.tables 
+                WHERE table_schema = 'public' 
+                AND table_name = $1
+            )",
+        )
+        .bind(tablename)
+        .fetch_one(&pool)
         .await
-        .expect("Failed to create table");
+        .expect("Failed to check if table exists");
+        
+
+    if !table_exists {
+        let mut create_query = format!("CREATE TABLE {} (", tablename);
+        let mut column_definitions = vec![];
+
+        for field in fields {
+            let mut column_definition = format!("");
+            match field.data_type.as_ref() {
+                "String"
+                | "StringInt"
+                | "Name"
+                | "City"
+                | "Email"
+                | "Password"
+                | "Word"
+                | "FirstName"
+                | "LastName"
+                | "Title"
+                | "Suffix"
+                | "NameWithTitle"
+                | "FreeEmailProvider"
+                | "DomainSuffix"
+                | "FreeEmail"
+                | "SafeEmail"
+                | "Username"
+                | "IPv4"
+                | "IPv6"
+                | "IP"
+                | "MACAddress"
+                | "UserAgent"
+                | "RfcStatusCode"
+                | "ValidStatusCode"
+                | "HexColor"
+                | "RgbColor"
+                | "RgbaColor"
+                | "HslColor"
+                | "Color"
+                | "CompanySuffix"
+                | "CompanyName"
+                | "Buzzword"
+                | "BuzzwordMiddle"
+                | "BuzzwordTail"
+                | "CatchPhase"
+                | "Verb"
+                | "Adj"
+                | "Noun"
+                | "Bs"
+                | "Profession"
+                | "Industry"
+                | "Geohash"
+                | "CityPrefix"
+                | "CitySuffix"
+                | "CityName"
+                | "CountryName"
+                | "CountryCode"
+                | "StreetSuffix"
+                | "StreetName"
+                | "FilePath"
+                | "FileName"
+                | "FileExtension"
+                | "DirPath"
+                | "StateName"
+                | "StateAbbr"
+                | "SecondaryAddressType"
+                | "SecondaryAddress"
+                | "PostCode"
+                | "BuildingNumber"
+                | "LicencePlate"
+                | "Isbn"
+                | "Isbn13"
+                | "Isbn10"
+                | "PhoneNumber"
+                | "CellNumber"
+                | "Bic"
+                | "UUIDv1"
+                | "UUIDv3"
+                | "UUIDv4"
+                | "UUIDv5"
+                | "Product" => {
+                    let max_length = field.config.max_length.unwrap_or(255);
+                    column_definition =
+                        format!("{} {}({})", field.fieldname, "VARCHAR", max_length);
+                } //DECIMAL(#, #)
+                "Latitude" => {
+                    column_definition = format!("{} {}", field.fieldname, "DECIMAL(8,6)");
+                }
+                "Longitude" => {
+                    column_definition = format!("{} {}", field.fieldname, "DECIMAL(9,6)");
+                } //BOOLEAN
+                "Bool" => {
+                    column_definition = format!("{} {}", field.fieldname, "BOOLEAN");
+                } //TEXT
+                "Sentence" | "Sentences" | "Words" | "Paragraph" | "Paragraphs" => {
+                    column_definition = format!("{} {}", field.fieldname, "TEXT");
+                } //INT
+                "Int" | "Digit" | "ZipCode" => {
+                    column_definition = format!("{} {}", field.fieldname, "INT");
+                } //FLOAT
+                "Float" => {
+                    column_definition = format!("{} {}", field.fieldname, "FLOAT");
+                } //BIGINT
+                "Bigint" => {
+                    column_definition = format!("{} {}", field.fieldname, "BIGINT");
+                }
+                //TIME
+                "Time" => {
+                    column_definition = format!("{} {}", field.fieldname, "Time");
+                } //DATE
+                "Date" => {
+                    column_definition = format!("{} {}", field.fieldname, "DATE");
+                } //DATETIME //TIMESTAMP
+                "DateTime" | "DateTimeBefore" | "DateTimeAfter" | "DateTimeBetween" => {
+                    column_definition = format!("{} {}", field.fieldname, "TIMESTAMP");
+                }
+                _ => println!(
+                    "Didn't find -> {} <- in any of the expected values.",
+                    field.data_type
+                ),
+            }
+            column_definitions.push(column_definition);
+        }
+        create_query.push_str(&column_definitions.join(", "));
+
+        let add_sql_str = format!(", {} ", add_sql);
+        create_query.push_str(&add_sql_str); ///// MODI
+
+        create_query.push_str(");");
+
+        print!("create_query -> {}", create_query);
+
+        sqlx::query(&create_query)
+            .execute(&pool)
+            .await
+            .expect("Failed to create table");
+    } else {
+        print!("table -> {} already exists", tablename);
+    }
 }
 
 //Creating and Inserting fake data into the table
