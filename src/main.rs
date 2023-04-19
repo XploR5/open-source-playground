@@ -131,6 +131,9 @@ async fn handle_create_tables_and_data_req(req: web::Json<CreateDataRequest>) ->
         .await;
     }
 
+    // Create relations table
+    create_relations_table(&database).await;
+    
     // creating fake data and inserting into the tables
     for i in 0..tables.len() {
         create_and_insert_data(
@@ -144,6 +147,26 @@ async fn handle_create_tables_and_data_req(req: web::Json<CreateDataRequest>) ->
 
     let response: String = format!("Data created and added successfully");
     HttpResponse::Created().json(CreateDataResponse { response: response })
+}
+
+//CREATES RELATIONS TABLE
+async fn create_relations_table(database: &String) {
+    // Connecting to the Database
+    let connect_options = PgConnectOptions::new()
+        .username("postgres")
+        .password("password")
+        .host("localhost")
+        .database(&database); // connect to the default postgres database
+
+    let pool = PgPool::connect_with(connect_options)
+        .await
+        .expect("Failed to create database pool");
+
+    let create_relations_table_query = "CREATE TABLE relations (unique_id varchar, primary_table varchar, secondary_table varchar);".to_string();
+    sqlx::query(&create_relations_table_query)
+        .execute(&pool)
+        .await
+        .expect("Failed to create relations table");
 }
 
 //CREATES RELATIONS BETWEEN EXISTING TABLES
@@ -177,7 +200,6 @@ async fn handle_add_relations_in_tables_req(req: web::Json<CreateRelation>) -> i
         .await
         .expect("Failed to create new column");
 
-
     let primary_key_query = format!(
         "SELECT column_name
         FROM information_schema.key_column_usage
@@ -187,9 +209,9 @@ async fn handle_add_relations_in_tables_req(req: web::Json<CreateRelation>) -> i
     );
 
     let primary_key_name: String = sqlx::query_scalar(&primary_key_query)
-    .fetch_one(&pool)
-    .await
-    .expect("Failed to get primary key name");
+        .fetch_one(&pool)
+        .await
+        .expect("Failed to get primary key name");
 
     let products_query = format!("SELECT {} FROM {}", primary_key_name, primary_table);
 
@@ -197,7 +219,6 @@ async fn handle_add_relations_in_tables_req(req: web::Json<CreateRelation>) -> i
         .fetch_all(&pool)
         .await
         .expect("Failed to get products");
-
 
     let column_query = format!(
         "SELECT column_name FROM information_schema.columns WHERE table_name = '{}' ORDER BY ordinal_position LIMIT 1",
@@ -370,26 +391,25 @@ async fn create_table(
         .await
         .expect("Failed to create database pool");
 
-        let table_exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS (
+    let table_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
                 SELECT *
                 FROM information_schema.tables 
                 WHERE table_schema = 'public' 
                 AND table_name = $1
             )",
-        )
-        .bind(tablename)
-        .fetch_one(&pool)
-        .await
-        .expect("Failed to check if table exists");
-        
+    )
+    .bind(tablename)
+    .fetch_one(&pool)
+    .await
+    .expect("Failed to check if table exists");
 
     if !table_exists {
         let mut create_query = format!("CREATE TABLE {} (", tablename);
         let mut column_definitions = vec![];
 
-        let add_sql_str = format!("{} ,", add_sql);
-        create_query.push_str(&add_sql_str); ///// MODI
+        let add_sql_str = format!(" {} ,", add_sql);
+        create_query.push_str(&add_sql_str); ///// MODIFY
 
         for field in fields {
             let mut column_definition = format!("");
@@ -508,9 +528,6 @@ async fn create_table(
             column_definitions.push(column_definition);
         }
         create_query.push_str(&column_definitions.join(", "));
-
-        // let add_sql_str = format!(", {} ", add_sql);
-        // create_query.push_str(&add_sql_str); ///// MODI
 
         create_query.push_str(");");
 
