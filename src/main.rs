@@ -1,4 +1,23 @@
 // // ----- IMPORTS START ----- // //
+
+// 5 changes
+/*
+
+1. seperate creation of tables and Insertion of data in the tables into diffrent APIs -- Sepration of Concerns
+    [Now we have 4 APIs 1. create_tables 2. populate_tables 3. add_relations_btn_tables 4. delete_relations_btn_tables]
+
+2. Validate the JSON recieved (do this for all the individual APIs) -- Proper Error Handeling For Every Errors
+
+3. Meta Data should be stored seperately from the Synthetic data that we are actually creating
+   Thus: 
+    1. The create_tables api should create tables, store the JSON (Schema) in mongodb and return the unique ID
+    2. The populate_tables api should take the unique ID, retrive the schema from mongodb and based on that schema, it should populate the already created tables inside the database.
+    3. The add_relations and delete_relations api should be dynamic with proper error handeling
+
+*/
+
+// add validation function
+
 use actix_web::{
     web::{self},
     App, HttpResponse, HttpServer, Responder,
@@ -69,6 +88,7 @@ struct Table {
     tablename: String,
     datasize: u128,
     add_sql: String,
+    //attributes
     fields: Vec<Field>,
 }
 
@@ -1228,11 +1248,11 @@ async fn handle_delete_relations_in_tables_req(
 async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
-            .service(
+            .service( // break this into create (store json in mongo) and populate data 
                 web::resource("/create_tables_and_data")
                     .route(web::post().to(handle_create_tables_and_data_req)),
             )
-            .service(
+            .service( // the relations table should be in Mongodb //selection of primary key should be dynamic
                 web::resource("/add_relations_in_tables")
                     .route(web::post().to(handle_add_relations_in_tables_req)),
             )
