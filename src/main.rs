@@ -9,7 +9,7 @@
 2. Validate the JSON recieved (do this for all the individual APIs) -- Proper Error Handeling For Every Errors
 
 3. Meta Data should be stored seperately from the Synthetic data that we are actually creating
-   Thus: 
+   Thus:
     1. The create_tables api should create tables, store the JSON (Schema) in mongodb and return the unique ID
     2. The populate_tables api should take the unique ID, retrive the schema from mongodb and based on that schema, it should populate the already created tables inside the database.
     3. The add_relations and delete_relations api should be dynamic with proper error handeling
@@ -18,10 +18,13 @@
 
 // add validation function
 
+use std::fmt::format;
+
 use actix_web::{
     web::{self},
     App, HttpResponse, HttpServer, Responder,
 };
+use bson::oid::ObjectId;
 use chrono::{TimeZone, Utc};
 use fake::faker::{
     address::en::{
@@ -64,8 +67,14 @@ use fake::{
     },
     Fake, Faker,
 };
+use mongodb::{
+    bson::{self, doc},
+    Client, Collection,
+};
+use mongodb::{error::Error, options::FindOneOptions};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sqlx::postgres::{PgConnectOptions, PgPool};
 use uuid::Uuid;
 
@@ -77,29 +86,45 @@ struct CreateDataResponse {
     response: String,
 }
 
-#[derive(Deserialize)]
-struct CreateDataRequest {
+#[derive(Debug, Serialize)]
+struct NewCreateDataResponse {
+    response: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct CreateDataUsingSchemaIdRequest {
+    schema_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct AddSchemaRequest {
     database: String,
     tables: Vec<Table>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Table {
     tablename: String,
-    datasize: u128,
-    add_sql: String,
-    //attributes
+    datasize: usize,
     fields: Vec<Field>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
+struct Attribute {
+    is_primary: Option<bool>,
+    is_serial: Option<bool>,
+    is_null: Option<bool>
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct Field {
     fieldname: String,
     data_type: String,
     config: Config,
+    attributes: Attribute,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Config {
     min_length: Option<i32>,
     max_length: Option<i32>,
@@ -140,12 +165,7 @@ struct Relation {
 // // ----- HELPER FUNCTIONS START ----- // //
 
 //Creating Table
-async fn create_table(
-    tablename: &String,
-    add_sql: &String,
-    fields: &Vec<Field>,
-    database: &String,
-) {
+async fn create_table(tablename: &String, fields: &Vec<Field>, database: &String) {
     // Connecting to the Database
     let connect_options = PgConnectOptions::new()
         .username("postgres")
@@ -202,8 +222,8 @@ async fn create_table(
         let mut create_query = format!("CREATE TABLE {} (", tablename);
         let mut column_definitions = vec![];
 
-        let add_sql_str = format!("{} ,", add_sql);
-        create_query.push_str(&add_sql_str); ///// MODI
+        // let add_sql_str = format!("{} ,", add_sql);
+        // create_query.push_str(&add_sql_str); ///// MODI
 
         for field in fields {
             let mut column_definition = format!("");
@@ -282,6 +302,15 @@ async fn create_table(
                     let max_length = field.config.max_length.unwrap_or(255);
                     column_definition =
                         format!("{} {}({})", field.fieldname, "VARCHAR", max_length);
+                    let is_null = field.attributes.is_null.unwrap_or(true); 
+                    if !is_null{
+                        column_definition.push_str(" NOT NULL ");
+                    }
+                    let is_primary: bool = field.attributes.is_primary.unwrap_or(false);
+                    if is_primary{
+                        column_definition.push_str(" PRIMARY KEY ");
+                    }
+                    
                 } //DECIMAL(#, #)
                 "Latitude" => {
                     column_definition = format!("{} {}", field.fieldname, "DECIMAL(8,6)");
@@ -336,48 +365,10 @@ async fn create_table(
     }
 }
 
-//Creates realtaions between tables
-async fn create_relations_table(database: &String) {
-    // Connecting to the Database
-    let connect_options = PgConnectOptions::new()
-        .username("postgres")
-        .password("password")
-        .host("localhost")
-        .database(&database); // connect to the default postgres database
-
-    let pool = PgPool::connect_with(connect_options)
-        .await
-        .expect("Failed to create database pool hi");
-
-    let table_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS (
-                    SELECT *
-                    FROM information_schema.tables 
-                    WHERE table_schema = 'public' 
-                    AND table_name = $1
-                )",
-    )
-    .bind("relations")
-    .fetch_one(&pool)
-    .await
-    .expect("Failed to check if table exists");
-
-    if !table_exists {
-        let create_relations_table_query = "CREATE TABLE relations (unique_id varchar, primary_table varchar, secondary_table varchar);".to_string();
-        sqlx::query(&create_relations_table_query)
-            .execute(&pool)
-            .await
-            .expect("Failed to create relations table");
-    }
-    else{
-        print!("relations table exists already \n");
-    }
-}
-
 //Creating and Inserting fake data into the table
 async fn create_and_insert_data(
     tablename: &String,
-    datasize: &u128,
+    datasize: &usize,
     fields: &Vec<Field>,
     database: &String,
 ) -> impl Responder {
@@ -1032,23 +1023,102 @@ async fn create_and_insert_data(
 
 // // ----- HANDLER FUNCTIONS START ----- // //
 
-//HANDLE CREATE TABLE AND DATA
-async fn handle_create_tables_and_data_req(req: web::Json<CreateDataRequest>) -> impl Responder {
+//HANDLE ADD SCHEMA
+async fn handle_add_schema_req(req: web::Json<AddSchemaRequest>) -> impl Responder {
+    // Create a MongoDB client and connect to your server
+    let client = Client::with_uri_str("mongodb://localhost:27017/")
+        .await
+        .unwrap();
+
+    // Access the database and collection that you want to use
+    let db = client.database("datasynth");
+    let collection: Collection<AddSchemaRequest> = db.collection("schemas");
+
+    // Insert the document into the collection using the insert_one method
+    let result = collection.insert_one(req.into_inner(), None).await.unwrap();
+
+    // Retrieve the _id field of the inserted document and return it in the response
+    let id = result.inserted_id.as_object_id().unwrap().to_hex();
+
+    HttpResponse::Created().json(CreateDataResponse { response: id })
+}
+
+//HANDLE CREATE AND INSERT DATA
+async fn handle_create_table_and_insert_data_req(
+    req: web::Json<CreateDataUsingSchemaIdRequest>,
+) -> impl Responder {
     // Getting the request JSON
-    let CreateDataRequest { database, tables } = req.into_inner();
+    let create_data_request = req.into_inner();
+
+    // Connect to the MongoDB server and access the database and collection
+    let client = Client::with_uri_str("mongodb://localhost:27017/")
+        .await
+        .unwrap();
+
+    let db = client.database("datasynth");
+    let collection: Collection<AddSchemaRequest> = db.collection("schemas");
+
+    // Convert the schema_id string to an ObjectId and use it to retrieve the document from MongoDB
+    let oid = ObjectId::parse_str(&create_data_request.schema_id).unwrap();
+    println!("Searching for document with id: {:?}", oid);
+
+    // Define the filter to search for the document with the given `oid`
+    let filter = doc! { "_id": oid };
+
+    // Define the options for the find_one operation (optional)
+    let options = FindOneOptions::builder().build();
+
+    // Execute the find_one operation and print the result
+    let document = match collection.find_one(filter, options).await {
+        Ok(Some(result)) => {
+            // println!("Found document: {:?}", result);
+            result
+        }
+        Ok(None) => {
+            println!("No document found with id: {:?}", oid);
+            return HttpResponse::NotFound().finish();
+        }
+        Err(e) => {
+            eprintln!("Error finding document: {:?}", e);
+            return HttpResponse::InternalServerError().finish();
+        }
+    };
+
+    let json = match serde_json::to_value(document) {
+        Ok(value) => value,
+        Err(e) => {
+            eprintln!("Error converting document to JSON: {:?}", e);
+            return HttpResponse::InternalServerError().finish();
+        }
+    };
+
+    handle_create_tables_and_data_req(web::Json(json)).await;
+
+    // HttpResponse::Ok().json(json)
+    HttpResponse::Created().json(NewCreateDataResponse {
+        response: "ok_response".to_string(),
+    })
+}
+
+#[derive(Deserialize)]
+struct CreateDataRequest {
+    database: String,
+    tables: Vec<Table>,
+}
+
+async fn handle_create_tables_and_data_req(json: web::Json<Value>) -> impl Responder {
+    // Getting the request JSON
+    let create_data_request: CreateDataRequest = serde_json::from_value(json.into_inner())
+        .map_err(|e| HttpResponse::BadRequest().body(format!("Invalid JSON: {}", e)))
+        .unwrap();
+
+    let database = &create_data_request.database;
+    let tables = &create_data_request.tables;
 
     // Creating tables in database
     for i in 0..tables.len() {
-        create_table(
-            &tables[i].tablename,
-            &tables[i].add_sql,
-            &tables[i].fields,
-            &database,
-        )
-        .await;
+        create_table(&tables[i].tablename, &tables[i].fields, &database).await;
     }
-
-    create_relations_table(&database).await;
 
     // creating fake data and inserting into the tables
     for i in 0..tables.len() {
@@ -1064,6 +1134,49 @@ async fn handle_create_tables_and_data_req(req: web::Json<CreateDataRequest>) ->
     let response: String = format!("Data created and added successfully");
     HttpResponse::Created().json(CreateDataResponse { response: response })
 }
+
+//save
+/*
+    let filter = doc! { "_id": oid };
+    let result = collection.find_one(filter, None).await.unwrap();
+
+    print!("\n\n result: {:#?} \n\n", result);
+
+
+    // Serialize the retrieved document to JSON format and return it in the response
+    let response = serde_json::to_string(&result).unwrap();
+    HttpResponse::Created().json(CreateDataResponse { response: response })
+
+    // get JSON here
+
+    // Creating tables in database
+    for i in 0..tables.len() {
+        create_table(
+            &tables[i].tablename,
+            &tables[i].tablename,
+            &tables[i].fields,
+            &database,
+        )
+        .await;
+    }
+
+    // creating fake data and inserting into the tables
+    for i in 0..tables.len() {
+        create_and_insert_data(
+            &tables[i].tablename,
+            &tables[i].datasize,
+            &tables[i].fields,
+            &database,
+        )
+        .await;
+    }
+
+
+    let response: String = format!("Data created and added successfully");
+    HttpResponse::Created().json(CreateDataResponse { response: response })
+
+
+}*/
 
 //HANDLE CREATE RELATIONS BETWEEN EXISTING TABLES
 async fn handle_add_relations_in_tables_req(req: web::Json<CreateRelation>) -> impl Responder {
@@ -1248,11 +1361,12 @@ async fn handle_delete_relations_in_tables_req(
 async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
-            .service( // break this into create (store json in mongo) and populate data 
-                web::resource("/create_tables_and_data")
-                    .route(web::post().to(handle_create_tables_and_data_req)),
+            .service(web::resource("/add_schema").route(web::post().to(handle_add_schema_req)))
+            .service(
+                web::resource("/create_table_and_insert_data")
+                    .route(web::post().to(handle_create_table_and_insert_data_req)),
             )
-            .service( // the relations table should be in Mongodb //selection of primary key should be dynamic
+            .service(
                 web::resource("/add_relations_in_tables")
                     .route(web::post().to(handle_add_relations_in_tables_req)),
             )
