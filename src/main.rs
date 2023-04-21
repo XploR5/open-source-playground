@@ -112,8 +112,7 @@ struct Table {
 #[derive(Debug, Serialize, Deserialize)]
 struct Attribute {
     is_primary: Option<bool>,
-    is_serial: Option<bool>,
-    is_null: Option<bool>
+    is_not_null: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -222,9 +221,6 @@ async fn create_table(tablename: &String, fields: &Vec<Field>, database: &String
         let mut create_query = format!("CREATE TABLE {} (", tablename);
         let mut column_definitions = vec![];
 
-        // let add_sql_str = format!("{} ,", add_sql);
-        // create_query.push_str(&add_sql_str); ///// MODI
-
         for field in fields {
             let mut column_definition = format!("");
             match field.data_type.as_ref() {
@@ -302,15 +298,6 @@ async fn create_table(tablename: &String, fields: &Vec<Field>, database: &String
                     let max_length = field.config.max_length.unwrap_or(255);
                     column_definition =
                         format!("{} {}({})", field.fieldname, "VARCHAR", max_length);
-                    let is_null = field.attributes.is_null.unwrap_or(true); 
-                    if !is_null{
-                        column_definition.push_str(" NOT NULL ");
-                    }
-                    let is_primary: bool = field.attributes.is_primary.unwrap_or(false);
-                    if is_primary{
-                        column_definition.push_str(" PRIMARY KEY ");
-                    }
-                    
                 } //DECIMAL(#, #)
                 "Latitude" => {
                     column_definition = format!("{} {}", field.fieldname, "DECIMAL(8,6)");
@@ -326,6 +313,9 @@ async fn create_table(tablename: &String, fields: &Vec<Field>, database: &String
                 } //INT
                 "Int" | "Digit" | "ZipCode" => {
                     column_definition = format!("{} {}", field.fieldname, "INT");
+                } //SERIAL
+                "Serial" => {
+                    column_definition = format!("{} {}", field.fieldname, "SERIAL");
                 } //FLOAT
                 "Float" => {
                     column_definition = format!("{} {}", field.fieldname, "FLOAT");
@@ -348,9 +338,43 @@ async fn create_table(tablename: &String, fields: &Vec<Field>, database: &String
                     field.data_type
                 ),
             }
+            // checking for not null attribute
+
+            let is_not_null: bool = field.attributes.is_not_null.unwrap_or(true);
+
+            if !is_not_null {
+                column_definition.push_str(" NOT NULL ");
+            }
+
             column_definitions.push(column_definition);
         }
         create_query.push_str(&column_definitions.join(", "));
+
+        // check if there are any primary keys in the table
+        let mut contains_primary_key: bool = false;
+        for field in fields {
+            if field.attributes.is_primary.unwrap_or(false) {
+                contains_primary_key = true;
+            }
+        }
+
+        //  Create a Composite key if user adds the primary key attribute for more than one field
+        //  Else there will be only one primary key or none
+        if contains_primary_key {
+            create_query.push_str(", PRIMARY KEY(");
+            let mut p_keys = vec![];
+
+            for field in fields {
+                if field.attributes.is_primary.unwrap_or(false) {
+                    let mut p_key = format!("");
+                    let var: String = format!("{}", field.fieldname);
+                    p_key.push_str(&var);
+                    p_keys.push(p_key);
+                }
+            }
+            create_query.push_str(&p_keys.join(", "));
+            create_query.push_str(")");
+        }
 
         create_query.push_str(");");
 
@@ -387,6 +411,9 @@ async fn create_and_insert_data(
     for _i in 0..*datasize {
         let mut row_values = vec![];
         for field in fields {
+            if &field.data_type == "Serial" {
+                continue;
+            }
             let fake_value = match field.data_type.as_str() {
                 //VARCHAR
                 "String" => {
@@ -1003,11 +1030,14 @@ async fn create_and_insert_data(
         tablename,
         fields
             .iter()
+            .filter(|f| f.data_type.to_lowercase() != "serial")
             .map(|f| f.fieldname.clone())
             .collect::<Vec<String>>()
             .join(", "),
         values.join("), (")
     );
+
+    // print!("\n\n Insert Query --> {} \n\n", insert_query); // print query for debug
 
     sqlx::query(&insert_query)
         .execute(&pool)
@@ -1048,7 +1078,7 @@ async fn handle_create_table_and_insert_data_req(
     req: web::Json<CreateDataUsingSchemaIdRequest>,
 ) -> impl Responder {
     // Getting the request JSON
-    let create_data_request = req.into_inner();
+    let create_data_using_id_request = req.into_inner();
 
     // Connect to the MongoDB server and access the database and collection
     let client = Client::with_uri_str("mongodb://localhost:27017/")
@@ -1059,7 +1089,7 @@ async fn handle_create_table_and_insert_data_req(
     let collection: Collection<AddSchemaRequest> = db.collection("schemas");
 
     // Convert the schema_id string to an ObjectId and use it to retrieve the document from MongoDB
-    let oid = ObjectId::parse_str(&create_data_request.schema_id).unwrap();
+    let oid = ObjectId::parse_str(&create_data_using_id_request.schema_id).unwrap();
     println!("Searching for document with id: {:?}", oid);
 
     // Define the filter to search for the document with the given `oid`
@@ -1135,49 +1165,6 @@ async fn handle_create_tables_and_data_req(json: web::Json<Value>) -> impl Respo
     HttpResponse::Created().json(CreateDataResponse { response: response })
 }
 
-//save
-/*
-    let filter = doc! { "_id": oid };
-    let result = collection.find_one(filter, None).await.unwrap();
-
-    print!("\n\n result: {:#?} \n\n", result);
-
-
-    // Serialize the retrieved document to JSON format and return it in the response
-    let response = serde_json::to_string(&result).unwrap();
-    HttpResponse::Created().json(CreateDataResponse { response: response })
-
-    // get JSON here
-
-    // Creating tables in database
-    for i in 0..tables.len() {
-        create_table(
-            &tables[i].tablename,
-            &tables[i].tablename,
-            &tables[i].fields,
-            &database,
-        )
-        .await;
-    }
-
-    // creating fake data and inserting into the tables
-    for i in 0..tables.len() {
-        create_and_insert_data(
-            &tables[i].tablename,
-            &tables[i].datasize,
-            &tables[i].fields,
-            &database,
-        )
-        .await;
-    }
-
-
-    let response: String = format!("Data created and added successfully");
-    HttpResponse::Created().json(CreateDataResponse { response: response })
-
-
-}*/
-
 //HANDLE CREATE RELATIONS BETWEEN EXISTING TABLES
 async fn handle_add_relations_in_tables_req(req: web::Json<CreateRelation>) -> impl Responder {
     // Getting the request JSON
@@ -1224,6 +1211,7 @@ async fn handle_add_relations_in_tables_req(req: web::Json<CreateRelation>) -> i
 
     let products_query = format!("SELECT {} FROM {}", primary_key_name, primary_table);
 
+    // TODO - Keep the vector type generic Vec<variable>
     let mut products: Vec<i32> = sqlx::query_scalar(&products_query)
         .fetch_all(&pool)
         .await
@@ -1239,6 +1227,7 @@ async fn handle_add_relations_in_tables_req(req: web::Json<CreateRelation>) -> i
         .expect("Failed to get column name");
 
     let orders_query = format!("SELECT {} FROM {}", column_name, secondary_table);
+    // TODO
     let orders: Vec<i32> = sqlx::query_scalar(&orders_query)
         .fetch_all(&pool)
         .await
