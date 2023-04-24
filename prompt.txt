@@ -1,0 +1,65 @@
+// I have two tables in postgreSQL (Below two tables are just for example, there could be any type of tables with one or more primary coloumns)
+CREATE TABLE customer( customer_id serial, name varchar, email varchar, primary key(customer_id, email));
+CREATE TABLE orders( order_id serial, product varchar, time TIMESTAMP);
+
+Now your task is to write SQL to find the primary keys from the table customers (You do not know the primary keys beforehand, so do not write the primary key name in the SQL query directly) and add those as references in the table orders. 
+Note that both the tables are already populated, so also include the sql query to select random data from the primary table and populate the secondary table.
+start writing the SQL code if the requirements are cleared to you.
+
+
+
+
+ALTER TABLE orders ADD COLUMN customer_id INTEGER, ADD COLUMN email VARCHAR, ADD CONSTRAINT orders_customer_fk FOREIGN KEY (customer_id, email) REFERENCES customers (customer_id, email) ON DELETE CASCADE;
+
+
+// This prints
+    //alter_table_sql -> ALTER TABLE orders ADD COLUMN customer_id integer, ADD COLUMN email character varying, ADD CONSTRAINT orders_customers_fk FOREIGN KEY (customer_id, email) REFERENCES customers (customer_id, email) ON DELETE CASCADE; <-
+
+    // Above code create two coloumns in the secondary table
+    // The created coloums referece the primary table but they are empty
+    // Below SQL query populates the created coloums with random values that they are referencing
+    // But the problem is that everything is hardcoded here
+    // Your task is to make it dynamic as you did with the above code
+    // SQL
+    /*WITH c AS (
+        SELECT customer_id, email, ROW_NUMBER() OVER (ORDER BY random()) AS rn
+        FROM customers
+    ), o AS (
+        SELECT order_id, ROW_NUMBER() OVER (ORDER BY order_id) AS rn
+        FROM orders
+        WHERE customer_id IS NULL
+    )
+    UPDATE orders
+    SET customer_id = c.customer_id,
+        email = c.email
+    FROM c
+    JOIN o ON c.rn = ((o.rn - 1) % (SELECT COUNT(*) FROM c)) + 1
+    WHERE orders.order_id = o.order_id;
+     */
+
+
+
+
+// let update_sql = format!(
+    //     "WITH c AS (
+    //         SELECT {}, ROW_NUMBER() OVER (ORDER BY random()) AS rn
+    //         FROM {}
+    //     ), o AS (
+    //         SELECT {}, ROW_NUMBER() OVER (ORDER BY {}) AS rn
+    //         FROM {}
+    //         WHERE {} IS NULL
+    //     )
+    //     UPDATE {}
+    //     SET ({}) = (SELECT {} FROM c WHERE c.rn = ((o.rn - 1) % (SELECT COUNT(*) FROM c)) + 1)
+    //     WHERE {} = o.order_id;",
+    //     pk_columns.join(", "), // select columns from primary table
+    //     primary_table,
+    //     pk_columns.join(", "), // select columns from secondary table
+    //     pk_columns[0],         // order by the first column
+    //     secondary_table,
+    //     pk_columns[0], // where the first column is null
+    //     secondary_table,
+    //     pk_columns.join(", "),    // set columns to values from primary table
+    //     pk_columns.join(", "),    // select columns from primary table
+    //     pk_columns.join(" AND "), // where columns match between tables
+    // );

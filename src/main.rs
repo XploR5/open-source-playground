@@ -1,25 +1,3 @@
-// // ----- IMPORTS START ----- // //
-
-// 5 changes
-/*
-
-1. seperate creation of tables and Insertion of data in the tables into diffrent APIs -- Sepration of Concerns
-    [Now we have 4 APIs 1. create_tables 2. populate_tables 3. add_relations_btn_tables 4. delete_relations_btn_tables]
-
-2. Validate the JSON recieved (do this for all the individual APIs) -- Proper Error Handeling For Every Errors
-
-3. Meta Data should be stored seperately from the Synthetic data that we are actually creating
-   Thus:
-    1. The create_tables api should create tables, store the JSON (Schema) in mongodb and return the unique ID
-    2. The populate_tables api should take the unique ID, retrive the schema from mongodb and based on that schema, it should populate the already created tables inside the database.
-    3. The add_relations and delete_relations api should be dynamic with proper error handeling
-
-*/
-
-// add validation function
-
-use std::fmt::format;
-
 use actix_web::{
     web::{self},
     App, HttpResponse, HttpServer, Responder,
@@ -67,16 +45,18 @@ use fake::{
     },
     Fake, Faker,
 };
+use mongodb::options::FindOneOptions;
 use mongodb::{
     bson::{self, doc},
     Client, Collection,
 };
-use mongodb::{error::Error, options::FindOneOptions};
+// use mongodb::{error::Error};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+// use sqlx::postgres::PgRow;
 use sqlx::postgres::{PgConnectOptions, PgPool};
-use uuid::Uuid;
+use sqlx::Row;
 
 // // ----- IMPORTS END ----- // //
 
@@ -84,6 +64,7 @@ use uuid::Uuid;
 #[derive(Debug, Serialize)]
 struct CreateDataResponse {
     response: String,
+    id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -134,12 +115,25 @@ struct Config {
 }
 
 #[derive(Debug, Serialize)]
-struct CreateDataResponse1 {
-    res: String,
-    request_id: String,
+struct CreateRelationRes {
+    relation_id: String,
+    response: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Serialize)]
+struct DeleteRelationRes {
+    relation_id: String,
+    response: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct StoredRelation {
+    database: String,
+    primary_table: String,
+    secondary_table: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct CreateRelation {
     database: String,
     primary_table: String,
@@ -150,13 +144,6 @@ struct CreateRelation {
 struct DeleteDataRequest {
     database: String,
     request_id: String,
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct Relation {
-    id: String,
-    primary_table: String,
-    secondary_table: String,
 }
 
 // // ----- STRUCT DEFINATIONS END ----- // //
@@ -1046,6 +1033,7 @@ async fn create_and_insert_data(
 
     HttpResponse::Created().json(CreateDataResponse {
         response: "Data created and Added successfully".to_string(),
+        id: "id".to_string(),
     })
 }
 
@@ -1062,7 +1050,8 @@ async fn handle_add_schema_req(req: web::Json<AddSchemaRequest>) -> impl Respond
 
     // Access the database and collection that you want to use
     let db = client.database("datasynth");
-    let collection: Collection<AddSchemaRequest> = db.collection("schemas");
+    // let collection: Collection<AddSchemaRequest> = db.collection(&req.database.clone());
+    let collection: Collection<AddSchemaRequest> = db.collection("schemas"); //"schemas"
 
     // Insert the document into the collection using the insert_one method
     let result = collection.insert_one(req.into_inner(), None).await.unwrap();
@@ -1070,7 +1059,10 @@ async fn handle_add_schema_req(req: web::Json<AddSchemaRequest>) -> impl Respond
     // Retrieve the _id field of the inserted document and return it in the response
     let id = result.inserted_id.as_object_id().unwrap().to_hex();
 
-    HttpResponse::Created().json(CreateDataResponse { response: id })
+    HttpResponse::Created().json(CreateDataResponse {
+        response: "yes".to_string(),
+        id: id,
+    })
 }
 
 //HANDLE CREATE AND INSERT DATA
@@ -1090,7 +1082,7 @@ async fn handle_create_table_and_insert_data_req(
 
     // Convert the schema_id string to an ObjectId and use it to retrieve the document from MongoDB
     let oid = ObjectId::parse_str(&create_data_using_id_request.schema_id).unwrap();
-    println!("Searching for document with id: {:?}", oid);
+    // println!("Searching for document with id: {:?}", oid);
 
     // Define the filter to search for the document with the given `oid`
     let filter = doc! { "_id": oid };
@@ -1122,6 +1114,8 @@ async fn handle_create_table_and_insert_data_req(
         }
     };
 
+    // CREATE TABLES AND INSERT DATA ACCORDING TO THE JSON
+    // THIS IS FOR POSTGRESQL DATABASE
     handle_create_tables_and_data_req(web::Json(json)).await;
 
     // HttpResponse::Ok().json(json)
@@ -1162,123 +1156,181 @@ async fn handle_create_tables_and_data_req(json: web::Json<Value>) -> impl Respo
     }
 
     let response: String = format!("Data created and added successfully");
-    HttpResponse::Created().json(CreateDataResponse { response: response })
+    HttpResponse::Created().json(CreateDataResponse {
+        response: response,
+        id: "id".to_string(),
+    })
 }
 
-//HANDLE CREATE RELATIONS BETWEEN EXISTING TABLES
-async fn handle_add_relations_in_tables_req(req: web::Json<CreateRelation>) -> impl Responder {
-    // Getting the request JSON
-    let CreateRelation {
-        database,
-        primary_table,
-        secondary_table,
-    } = req.into_inner();
-
+async fn add_relations(
+    database: &str,
+    primary_table: &str,
+    secondary_table: &str,
+) -> anyhow::Result<()> {
+    // Connecting to PostgreSQL
     let connect_options = PgConnectOptions::new()
         .username("postgres")
         .password("password")
         .host("localhost")
-        .database(&database);
+        .database(database);
+
     let pool = PgPool::connect_with(connect_options)
         .await
         .expect("Failed to create database pool");
 
-    let request_id = Uuid::new_v4();
-    let requestid = request_id.to_string();
-    let add_column_query = format!(
-        "ALTER TABLE {} ADD {}_id INTEGER",
+    // //1. Identify the primary key column(s) of the `primary_table`.
+    let primary_key_columns = get_primary_key_columns(&pool, primary_table).await?;
+
+    let mut alter_table_sql = format!("ALTER TABLE {} ", secondary_table);
+    // Generate ALTER TABLE statement to add new columns with foreign keys constraints
+    // Use a vector to store the column names and data types of the primary key columns
+    let mut pk_columns = Vec::new();
+    for (column_name, data_type) in primary_key_columns {
+        alter_table_sql += &format!("ADD COLUMN {} {}, ", column_name, data_type);
+        pk_columns.push(column_name);
+    }
+    // Add a constraint name and a foreign key clause
+    alter_table_sql += &format!(
+        "ADD CONSTRAINT {}_{}_fk FOREIGN KEY ({}) ",
         secondary_table,
-        primary_table.to_lowercase()
+        primary_table,
+        pk_columns.join(", ")
+    );
+    // Reference the primary table and columns
+    alter_table_sql += &format!(
+        "REFERENCES {} ({}) ON DELETE CASCADE;",
+        primary_table,
+        pk_columns.join(", ")
     );
 
-    sqlx::query(&add_column_query)
+    sqlx::query(&alter_table_sql)
         .execute(&pool)
         .await
-        .expect("Failed to create new column");
+        .expect("Failed to create coloumns in secondary table");
 
-    let primary_key_query = format!(
-        "SELECT column_name
-        FROM information_schema.key_column_usage
-        WHERE table_name = '{}'
-        AND constraint_name LIKE '%_pkey'",
-        primary_table
-    );
+    // Get the names of the columns that need to be updated in the orders table
+    // let update_columns = get_update_columns(&pool, secondary_table).await?;
+    let update_columns = ["customers", "email"];
 
-    let primary_key_name: String = sqlx::query_scalar(&primary_key_query)
-        .fetch_one(&pool)
-        .await
-        .expect("Failed to get primary key name");
 
-    let products_query = format!("SELECT {} FROM {}", primary_key_name, primary_table);
-
-    // TODO - Keep the vector type generic Vec<variable>
-    let mut products: Vec<i32> = sqlx::query_scalar(&products_query)
-        .fetch_all(&pool)
-        .await
-        .expect("Failed to get products");
-
-    let column_query = format!(
-        "SELECT column_name FROM information_schema.columns WHERE table_name = '{}' ORDER BY ordinal_position LIMIT 1",
-        secondary_table
-    );
-    let column_name: String = sqlx::query_scalar(&column_query)
-        .fetch_one(&pool)
-        .await
-        .expect("Failed to get column name");
-
-    let orders_query = format!("SELECT {} FROM {}", column_name, secondary_table);
-    // TODO
-    let orders: Vec<i32> = sqlx::query_scalar(&orders_query)
-        .fetch_all(&pool)
-        .await
-        .expect("Failed to get orders");
-
-    let mut rng = rand::thread_rng();
-    let temp_vec = products.clone();
-    for order_id in orders {
-        let product_index = rng.gen_range(0..products.len());
-        let product_id = products[product_index];
-
-        let update_query = format!(
-            "UPDATE {} SET {}_id = $1 WHERE {} = $2",
-            secondary_table,
-            primary_table.to_lowercase(),
-            column_name
-        );
-
-        sqlx::query(&update_query)
-            .bind(product_id)
-            .bind(order_id)
-            .execute(&pool)
-            .await
-            .expect("Failed to update order with foreign key");
-
-        products.remove(product_index);
-        if products.is_empty() {
-            products = temp_vec.clone();
-        }
+    // Generate a comma-separated list of column assignments
+    let mut column_assignments = String::new();
+    for column in &update_columns {
+        column_assignments += &format!("{} = c.{}, ", column, column);
     }
 
-    let relation = Relation {
-        id: requestid,
-        primary_table,
-        secondary_table,
-    };
+    //  // Remove the trailing comma and space
+    column_assignments.pop();
+    column_assignments.pop();
 
-    //insert both table names and unique id in database
-    let insert_query =
-        "INSERT INTO relations (unique_id, primary_table, secondary_table) VALUES ($1, $2, $3)";
-    sqlx::query(insert_query)
-        .bind(relation.id)
-        .bind(relation.primary_table)
-        .bind(relation.secondary_table)
+    // Generate a comma-separated list of column names for the CTEs
+    let column_names = update_columns.join(", ");
+    // let column_names = "customer_id, email";
+
+    // Generate a dynamic SQL query to update the orders table with random values from the customers table
+    let update_sql = format!(
+        "WITH c AS (
+        SELECT {0}, ROW_NUMBER() OVER (ORDER BY random()) AS rn
+        FROM {1}
+    ), o AS (
+        SELECT order_id, ROW_NUMBER() OVER (ORDER BY order_id) AS rn
+        FROM {2}
+        WHERE customer_id IS NULL
+    )
+    UPDATE {2}
+    SET {3}
+    FROM c
+    JOIN o ON c.rn = ((o.rn - 1) % (SELECT COUNT(*) FROM c)) + 1
+    WHERE {2}.order_id = o.order_id;
+    ",
+        column_names, primary_table, secondary_table, column_assignments
+    );
+
+    print!("\n\n update sql -> {} <- \n\n", update_sql);
+
+    sqlx::query(&update_sql)
         .execute(&pool)
         .await
-        .expect("Failed to insert relation into database");
+        .expect("Failed to update sql");
 
-    HttpResponse::Created().json(CreateDataResponse1 {
-        request_id: request_id.to_string(),
-        res: "Relational data added successfully".to_string(),
+    Ok(())
+}
+
+// Get the names of the columns in the secondary table that have foreign keys
+async fn get_update_columns(pool: &PgPool, secondary_table: &str) -> Result<Vec<String>, sqlx::Error> {
+    // Query the information schema for the foreign key columns
+    let query = format!("
+        SELECT column_name
+        FROM information_schema.key_column_usage
+        WHERE table_name = $1
+        AND constraint_name LIKE '%_fkey'
+    ");
+    // Execute the query and collect the results into a vector of strings
+    let update_columns: Vec<String> = sqlx::query_scalar(&query)
+        .bind(secondary_table)
+        .fetch_all(pool)
+        .await?;
+    // Return the vector of column names
+    Ok(update_columns)
+}
+
+// Helper function to get the primary key column(s) of a table
+async fn get_primary_key_columns(
+    pool: &PgPool,
+    table_name: &str,
+) -> anyhow::Result<Vec<(String, String)>> {
+    let query = format!(
+        "SELECT c.column_name, c.data_type
+         FROM information_schema.table_constraints tc
+         JOIN information_schema.constraint_column_usage ccu ON tc.constraint_name = ccu.constraint_name
+         JOIN information_schema.columns c ON c.table_name = tc.table_name AND ccu.column_name = c.column_name
+         WHERE constraint_type = 'PRIMARY KEY' AND tc.table_name = '{}'",
+        table_name
+    );
+    let rows = sqlx::query(&query).fetch_all(pool).await?;
+    let primary_key_columns = rows
+        .into_iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect();
+    Ok(primary_key_columns)
+}
+
+
+
+//HANDLE CREATE RELATIONS BETWEEN EXISTING TABLES
+async fn handle_add_relations_in_tables_req(req: web::Json<CreateRelation>) -> impl Responder {
+    //function to add relations in db
+    let relations = req.into_inner();
+    match add_relations(
+        &relations.database,
+        &relations.primary_table,
+        &relations.secondary_table,
+    )
+    .await
+    {
+        Ok(()) => println!("Relations added successfully"),
+        Err(err) => eprintln!("Error adding relations: {}", err),
+    }
+
+    // Create a MongoDB client and connect to your server
+    let client = Client::with_uri_str("mongodb://localhost:27017/")
+        .await
+        .unwrap();
+
+    // Access the database and collection that you want to use
+    let db = client.database("datasynth");
+    let collection_name = format!("{}_relations", &relations.database.clone());
+    let collection: Collection<CreateRelation> = db.collection(&collection_name);
+
+    // Insert the document into the collection using the insert_one method
+    let result = collection.insert_one(relations, None).await.unwrap();
+
+    // Retrieve the _id field of the inserted document and return it in the response
+    let id = result.inserted_id.as_object_id().unwrap().to_hex();
+
+    HttpResponse::Created().json(CreateRelationRes {
+        relation_id: id,
+        response: "Relation created successfully".to_string(),
     })
 }
 
@@ -1331,14 +1383,14 @@ async fn handle_delete_relations_in_tables_req(
                 .await
                 .expect("Failed to delete UUID from relations table");
 
-            HttpResponse::Ok().json(CreateDataResponse1 {
-                request_id: request_id,
-                res: "Relation deleted successfully".to_string(),
+            HttpResponse::Ok().json(DeleteRelationRes {
+                relation_id: request_id,
+                response: "Relation Deleted Successfully".to_string(),
             })
         }
-        Err(_) => HttpResponse::NotFound().json(CreateDataResponse1 {
-            request_id: request_id,
-            res: "Relation not found".to_string(),
+        Err(_) => HttpResponse::NotFound().json(DeleteRelationRes {
+            relation_id: request_id,
+            response: "Relation not found".to_string(),
         }),
     }
 }
