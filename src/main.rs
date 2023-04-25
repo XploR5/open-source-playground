@@ -367,14 +367,12 @@ async fn create_table(tablename: &String, fields: &Vec<Field>, database: &String
 
         create_query.push_str(");");
 
-        print!("create_query -> {}", create_query);
 
         sqlx::query(&create_query)
             .execute(&pool)
             .await
             .expect("Failed to create table");
     } else {
-        print!("table -> {} already exists", tablename);
     }
 }
 
@@ -1026,7 +1024,6 @@ async fn create_and_insert_data(
         values.join("), (")
     );
 
-    // print!("\n\n Insert Query --> {} \n\n", insert_query); // print query for debug
 
     sqlx::query(&insert_query)
         .execute(&pool)
@@ -1252,26 +1249,9 @@ async fn populate_secondary_table_with_primary_keys(
     primary_key_query.pop(); // Remove the last space
 
     let primary_keys: String = primary_key_columns.join(" ,");
-    print!("\n primary_keys -> {} <- \n", &primary_keys);
-
-    print!("This 1 \n");
-    print!("ptabl {primary_table} stab {secondary_table} \n");
-    let primary_table_columns = get_column_names(pool, primary_table).await?;
-    print!("This 2 \n");
-
     let secondary_table_columns = get_column_names(pool, secondary_table).await?;
-    print!("This 3 \n");
-
-    print!("\nprimary-table-columns -> {:?}\n", &primary_table_columns);
-    print!(
-        "\nsecondary-table-columns -> {:?}\n",
-        &secondary_table_columns
-    );
-
-    let first_primary_column = &primary_key_columns[0];
-    print!("\n first_primary_column -> {} \n", first_primary_column);
+    let first_primary_key_column = &primary_key_columns[0];
     let first_secondary_column = &secondary_table_columns[0];
-    print!("\n first_secondary_column -> {} \n", first_secondary_column);
 
     let query: String = format!(
         "
@@ -1295,7 +1275,7 @@ async fn populate_secondary_table_with_primary_keys(
             FROM
                 {secondary_table}
             WHERE
-                {first_primary_column} IS NULL
+                {first_primary_key_column} IS NULL
         )
         UPDATE
             {secondary_table}
@@ -1316,7 +1296,8 @@ async fn populate_secondary_table_with_primary_keys(
         "
     );
 
-    print!("\n query: -> {} <- \n", query);
+    // print!("query -> {query}"); // This is for debugging
+
 
     // Update the secondary table with random values from the primary table
     sqlx::query(&query).execute(pool).await?;
