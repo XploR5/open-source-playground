@@ -55,6 +55,8 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 // use sqlx::postgres::PgRow;
+use core::result::Result::Ok;
+use postgres::types::ToSql;
 use sqlx::postgres::{PgConnectOptions, PgPool};
 use sqlx::Row;
 
@@ -1208,73 +1210,141 @@ async fn add_relations(
         .await
         .expect("Failed to create coloumns in secondary table");
 
-    // Get the names of the columns that need to be updated in the orders table
-    // let update_columns = get_update_columns(&pool, secondary_table).await?;
-    let update_columns = ["customers", "email"];
-
-
-    // Generate a comma-separated list of column assignments
-    let mut column_assignments = String::new();
-    for column in &update_columns {
-        column_assignments += &format!("{} = c.{}, ", column, column);
-    }
-
-    //  // Remove the trailing comma and space
-    column_assignments.pop();
-    column_assignments.pop();
-
-    // Generate a comma-separated list of column names for the CTEs
-    let column_names = update_columns.join(", ");
-    // let column_names = "customer_id, email";
-
-    // Generate a dynamic SQL query to update the orders table with random values from the customers table
-    let update_sql = format!(
-        "WITH c AS (
-        SELECT {0}, ROW_NUMBER() OVER (ORDER BY random()) AS rn
-        FROM {1}
-    ), o AS (
-        SELECT order_id, ROW_NUMBER() OVER (ORDER BY order_id) AS rn
-        FROM {2}
-        WHERE customer_id IS NULL
-    )
-    UPDATE {2}
-    SET {3}
-    FROM c
-    JOIN o ON c.rn = ((o.rn - 1) % (SELECT COUNT(*) FROM c)) + 1
-    WHERE {2}.order_id = o.order_id;
-    ",
-        column_names, primary_table, secondary_table, column_assignments
-    );
-
-    print!("\n\n update sql -> {} <- \n\n", update_sql);
-
-    sqlx::query(&update_sql)
-        .execute(&pool)
-        .await
-        .expect("Failed to update sql");
+    // // FOREIGN KEY COLUMN CREATED IN THE SECONDARY TABLE
+    // // FUNCTION TO POPULATE THE CREATED FOREIGN KEY
+    match (populate_secondary_table_with_primary_keys(primary_table, secondary_table, &pool)).await
+    {
+        Ok(()) => println!("Relations added successfully"),
+        Err(err) => eprintln!("Error adding relations: {}", err),
+    };
 
     Ok(())
 }
 
-// Get the names of the columns in the secondary table that have foreign keys
-async fn get_update_columns(pool: &PgPool, secondary_table: &str) -> Result<Vec<String>, sqlx::Error> {
-    // Query the information schema for the foreign key columns
-    let query = format!("
-        SELECT column_name
-        FROM information_schema.key_column_usage
-        WHERE table_name = $1
-        AND constraint_name LIKE '%_fkey'
-    ");
-    // Execute the query and collect the results into a vector of strings
-    let update_columns: Vec<String> = sqlx::query_scalar(&query)
-        .bind(secondary_table)
-        .fetch_all(pool)
-        .await?;
-    // Return the vector of column names
-    Ok(update_columns)
+// Helper function to get column names of a table
+// A function that takes a postgres pool and a table name as input
+// and returns a vector of column names as strings
+async fn get_column_names(pool: &PgPool, table_name: &str) -> anyhow::Result<Vec<String>> {
+    let query = format!(
+        "SELECT column_name
+         FROM information_schema.columns
+         WHERE table_name = '{}'",
+        table_name
+    );
+    let rows = sqlx::query(&query).fetch_all(pool).await?;
+    let columns = rows.into_iter().map(|row| row.get(0)).collect();
+    Ok(columns)
 }
 
-// Helper function to get the primary key column(s) of a table
+// Helper function to populate the Secondary table form the values in primary table
+async fn populate_secondary_table_with_primary_keys(
+    primary_table: &str,
+    secondary_table: &str,
+    pool: &PgPool,
+) -> anyhow::Result<()> {
+    let primary_key_columns = get_only_primary_key_columns(&pool, &primary_table).await?;
+   
+    let mut primary_key_query = String::new();
+    for column_name in &primary_key_columns {
+        primary_key_query.push_str(&format!("{} = c.{}, ", column_name, column_name));
+    }
+    primary_key_query.pop(); // Remove the last comma
+    primary_key_query.pop(); // Remove the last space
+
+    let primary_keys: String = primary_key_columns.join(" ,");
+    print!("\n primary_keys -> {} <- \n", &primary_keys);
+
+    print!("This 1 \n");
+    print!("ptabl {primary_table} stab {secondary_table} \n");
+    let primary_table_columns = get_column_names(pool, primary_table).await?;
+    print!("This 2 \n");
+
+    let secondary_table_columns = get_column_names(pool, secondary_table).await?;
+    print!("This 3 \n");
+
+    print!("\nprimary-table-columns -> {:?}\n", &primary_table_columns);
+    print!(
+        "\nsecondary-table-columns -> {:?}\n",
+        &secondary_table_columns
+    );
+
+    let first_primary_column = &primary_key_columns[0];
+    print!("\n first_primary_column -> {} \n", first_primary_column);
+    let first_secondary_column = &secondary_table_columns[0];
+    print!("\n first_secondary_column -> {} \n", first_secondary_column);
+
+    let query: String = format!(
+        "
+        WITH c AS (
+            SELECT
+                {primary_keys},
+                ROW_NUMBER() OVER (
+                    ORDER BY
+                        random()
+                ) AS rn
+            FROM
+                {primary_table}
+        ),
+        o AS (
+            SELECT
+                {first_secondary_column},
+                ROW_NUMBER() OVER (
+                    ORDER BY
+                    {first_secondary_column}
+                ) AS rn
+            FROM
+                {secondary_table}
+            WHERE
+                {first_primary_column} IS NULL
+        )
+        UPDATE
+            {secondary_table}
+        SET
+            {primary_key_query}
+        FROM
+            c
+            JOIN o ON c.rn = (
+                (o.rn - 1) % (
+                    SELECT
+                        COUNT(*)
+                    FROM
+                        c
+                )
+            ) + 1
+        WHERE
+            {secondary_table}.{first_secondary_column} = o.{first_secondary_column};
+        "
+    );
+
+    print!("\n query: -> {} <- \n", query);
+
+    // Update the secondary table with random values from the primary table
+    sqlx::query(&query).execute(pool).await?;
+
+    Ok(())
+}
+
+// Helper function to get only the primary key column(s) of a table
+async fn get_only_primary_key_columns(
+    pool: &PgPool,
+    table_name: &str,
+) -> anyhow::Result<Vec<String>> {
+    let query = format!(
+        "SELECT column_name
+         FROM information_schema.key_column_usage
+         WHERE constraint_name IN (
+             SELECT constraint_name
+             FROM information_schema.table_constraints
+             WHERE table_name = '{}' AND constraint_type = 'PRIMARY KEY'
+         )",
+        table_name
+    );
+    let rows = sqlx::query(&query).fetch_all(pool).await?;
+    let primary_key_columns = rows.into_iter().map(|row| row.get(0)).collect();
+    Ok(primary_key_columns)
+}
+
+// Helper function to get the primary key column(s) + its datatype of a table
 async fn get_primary_key_columns(
     pool: &PgPool,
     table_name: &str,
@@ -1294,8 +1364,6 @@ async fn get_primary_key_columns(
         .collect();
     Ok(primary_key_columns)
 }
-
-
 
 //HANDLE CREATE RELATIONS BETWEEN EXISTING TABLES
 async fn handle_add_relations_in_tables_req(req: web::Json<CreateRelation>) -> impl Responder {
